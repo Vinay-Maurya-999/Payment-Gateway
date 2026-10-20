@@ -1,0 +1,71 @@
+import { Router } from "express";
+import productModel from "../model/Product.model.js";
+import paymentModel from "../model/payment.model.js";
+import instnace from "../config/rozarpay.js";
+import { validatePaymentVerification } from "razorpay/dist/utils/razorpay-utils.js";
+import _config from "../config/config.js";
+
+const PaymentRouter = Router();
+
+PaymentRouter.post("/:productId/order", async (req, res) => {
+  const { productId } = req.params;
+
+  const product = await productModel.findById(productId);
+
+  if (!product) {
+    return res.status(404).json({ message: "Product not found" });
+  }
+
+  const order = await instnace.orders.create({
+    amount: product.price.amount * 100,
+    currency: product.price.currency,
+    receipt: `order_rcptid_${productId}`,
+    notes: {
+      productId: productId,
+      productTitle: product.title,
+    },
+  });
+
+  const payment = await paymentModel.create({
+    orderId: order.id,
+    productId: productId,
+    amount: product.price.amount,
+    currency: product.price.currency,
+    status: "pending",
+  });
+  return res.status(201).json({ payment, keyId: instnace.key_id });
+});
+
+PaymentRouter.post("/verify", async (req, res) => {
+  const { orderId, paymentId, signature } = req.body;
+
+  const payment = await paymentModel.findOne({
+    orderId: orderId,
+    status: "pending",
+  });
+
+  if (!payment) {
+    return res.status(404).json({ message: "Payment not found or already verified" });
+  }
+
+  const isValid = validatePaymentVerification(
+    {
+      order_id: orderId,
+      payment_id: paymentId,
+    },
+    signature,
+    _config.rozarpay_secret,
+  );
+
+  if (!isValid) {
+    return res.status(400).json({ message: "Invalid payment verification" });
+  }
+
+  await paymentModel.updateOne(
+    { orderId: orderId },
+    { $set: { status: "completed", paymentId: paymentId, signature: signature } },
+  );
+  return res.status(200).json({ message: "Payment verified successfully" });
+});
+
+export default PaymentRouter;
